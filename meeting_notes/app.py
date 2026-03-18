@@ -695,6 +695,8 @@ class MeetingNotesApp(App):
             api_key = self.config.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
         elif self.config.ai_provider == "openrouter":
             api_key = self.config.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
+        elif self.config.ai_provider == "copilot":
+            api_key = self.config.github_copilot_token or os.getenv("GITHUB_COPILOT_TOKEN")
         
         self.note_maker = NoteMaker(
             output_dir=self.config.notes_dir,
@@ -1601,6 +1603,8 @@ class MeetingNotesApp(App):
                 api_key = self.config.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
             elif self.config.ai_provider == "openrouter":
                 api_key = self.config.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
+            elif self.config.ai_provider == "copilot":
+                api_key = self.config.github_copilot_token or os.getenv("GITHUB_COPILOT_TOKEN")
             
             self.note_maker = NoteMaker(
                 output_dir=self.config.notes_dir,

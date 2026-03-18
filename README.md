@@ -75,7 +75,7 @@ Run the cloud setup script:
 
 Or configure manually:
 - Press `,` in the app → configure API key
-- Supports OpenAI, Anthropic, OpenRouter
+- Supports OpenAI, Anthropic, OpenRouter, Copilot
 - Keys stored in `~/.config/meeting-notes/config.yaml`
 
 **Option B: Local AI (Free, private, but slower)**
@@ -187,7 +187,7 @@ python run.py --dev
 ### Settings
 
 Press `,` to configure:
-- AI provider (OpenAI, Anthropic, OpenRouter, Ollama, none)
+- AI provider (OpenAI, Anthropic, OpenRouter, Copilot, Ollama, none)
 - API keys
 - Whisper model (tiny/base/small/medium/large)
 - Recording mode (mic/system/combined)

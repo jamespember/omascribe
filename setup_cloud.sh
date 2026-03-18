@@ -25,7 +25,12 @@ echo "     - Gemini Flash (cheapest, ~$0.001/meeting)"
 echo "     - Claude via OpenRouter (~$0.005/meeting)"
 echo "     - Get key at: https://openrouter.ai/keys"
 echo
-read -p "Enter choice [1-3]: " PROVIDER_CHOICE
+echo "  4) Copilot"
+echo "     - GPT-4o Mini (recommended, ~$0.002/meeting)"
+echo "     - GPT-4o (premium, ~$0.03/meeting)"
+echo "     - Get client key at: https://github.com/settings/applications/new"
+echo
+read -p "Enter choice [1-4]: " PROVIDER_CHOICE
 echo
 
 case $PROVIDER_CHOICE in
@@ -52,6 +57,14 @@ case $PROVIDER_CHOICE in
         CONFIG_KEY="openrouter_api_key"
         DEFAULT_MODEL="balanced"
         KEY_URL="https://openrouter.ai/keys"
+        ;;
+    4)
+        PROVIDER="copilot"
+        PROVIDER_NAME="Copilot"
+        ENV_VAR="GITHUB_COPILOT_TOKEN"
+        CONFIG_KEY="github_copilot_token"
+        DEFAULT_MODEL="standard"
+        KEY_URL="https://github.com/settings/tokens"
         ;;
     *)
         echo "❌ Invalid choice"
@@ -141,6 +154,8 @@ ai_model: $DEFAULT_MODEL
 openai_api_key: $([ "$PROVIDER" = "openai" ] && echo "\"$API_KEY\"" || echo "\"\"")
 anthropic_api_key: $([ "$PROVIDER" = "anthropic" ] && echo "\"$API_KEY\"" || echo "\"\"")
 openrouter_api_key: $([ "$PROVIDER" = "openrouter" ] && echo "\"$API_KEY\"" || echo "\"\"")
+github_copilot_token: $([ "$PROVIDER" = "copilot" ] && echo "\"$API_KEY\"" || echo "\"\"")
+github_copilot_client_id: ""
 
 # Local Ollama (if you switch to local later)
 ollama_model: llama3.2:3b
@@ -213,6 +228,14 @@ try:
         print(f"  Medium (30 min, ~5k words): $0.005 - $0.025")
         print(f"  Long (1 hour, ~10k words):  $0.010 - $0.050")
     
+    elif provider == "copilot":
+        from meeting_notes.ai_summarizer import CopilotSummarizer
+        summarizer = CopilotSummarizer(api_key=api_key, model=model)
+        print(f"\n✓ Connected successfully to Copilot!")
+        print(f"✓ Using model: {summarizer.model_config['name']}")
+        print(f"\nTypical meeting costs:")
+        print(f"  Included with your active GitHub Copilot subscription")
+
     print("\n🎉 Setup complete! Your meetings will now be summarized in seconds!")
     sys.exit(0)
     

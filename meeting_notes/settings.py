@@ -223,6 +223,180 @@ class InstallModelScreen(ModalScreen[str]):
             self.dismiss(None)
 
 
+class CopilotAuthScreen(ModalScreen):
+    """Modal screen for GitHub Copilot authentication via Device Flow."""
+
+    CSS = """
+    CopilotAuthScreen {
+        align: center middle;
+    }
+    
+    #copilot-auth-dialog {
+        width: 70;
+        height: auto;
+        border: thick $primary;
+        background: $surface;
+        padding: 2;
+    }
+    
+    #copilot-auth-title {
+        text-align: center;
+        text-style: bold;
+        color: $accent;
+        margin-bottom: 1;
+    }
+    
+    #copilot-auth-instructions {
+        text-align: center;
+        color: $text;
+        margin: 1 0;
+    }
+    
+    #copilot-auth-code {
+        text-align: center;
+        text-style: bold;
+        color: $accent;
+        margin: 1 0;
+        padding: 1;
+        border: solid $primary;
+    }
+    
+    #copilot-auth-url {
+        text-align: center;
+        color: $text;
+        margin: 1 0;
+    }
+    
+    #copilot-auth-status {
+        text-align: center;
+        color: $text-muted;
+        margin: 1 0;
+    }
+    
+    #copilot-auth-spinner {
+        text-align: center;
+        color: $accent;
+        margin: 1 0;
+    }
+    
+    #copilot-auth-cancel {
+        width: 100%;
+        margin-top: 1;
+    }
+    """
+
+    status_message = reactive("Starting authentication...")
+
+    def __init__(self, client_id: str = "", **kwargs):
+        super().__init__(**kwargs)
+        self.spinner_frames = ["|", "/", "-", "\\"]
+        self.spinner_index = 0
+        self._user_code = ""
+        self._verification_uri = ""
+        self._client_id = client_id
+
+    def compose(self) -> ComposeResult:
+        with Container(id="copilot-auth-dialog"):
+            yield Static("GitHub Copilot Authentication", id="copilot-auth-title")
+            yield Static("", id="copilot-auth-instructions")
+            yield Static("", id="copilot-auth-code")
+            yield Static("", id="copilot-auth-url")
+            yield Static("", id="copilot-auth-status")
+            yield Static("", id="copilot-auth-spinner")
+            yield Button("Cancel", variant="default", id="copilot-auth-cancel")
+
+    def on_mount(self) -> None:
+        """Start the device flow on mount."""
+        self.update_spinner()
+        self.start_auth()
+
+    def watch_status_message(self, message: str) -> None:
+        """Update status display."""
+        try:
+            self.query_one("#copilot-auth-status", Static).update(message)
+        except Exception:
+            pass
+
+    def update_spinner(self) -> None:
+        """Animate the spinner while waiting."""
+        spinner = self.spinner_frames[self.spinner_index]
+        try:
+            self.query_one("#copilot-auth-spinner", Static).update(
+                f"{spinner} Waiting for authorization..."
+            )
+        except Exception:
+            pass
+        self.spinner_index = (self.spinner_index + 1) % len(self.spinner_frames)
+        self.set_timer(0.3, self.update_spinner)
+
+    @work(exclusive=True, thread=True)
+    def start_auth(self) -> None:
+        """Run the device flow in a background thread."""
+        try:
+            from meeting_notes.copilot_auth import (
+                start_device_flow,
+                poll_for_token,
+                DeviceFlowError,
+            )
+
+            # Step 1: Start device flow
+            self.app.call_from_thread(
+                setattr, self, "status_message", "Requesting device code..."
+            )
+            flow = start_device_flow(client_id=self._client_id or None)
+
+            user_code = flow["user_code"]
+            verification_uri = flow["verification_uri"]
+            device_code = flow["device_code"]
+            interval = flow.get("interval", 5)
+
+            # Step 2: Show the code to the user
+            def show_code():
+                try:
+                    self.query_one("#copilot-auth-instructions", Static).update(
+                        "Enter this code in your browser:"
+                    )
+                    self.query_one("#copilot-auth-code", Static).update(
+                        f"  {user_code}  "
+                    )
+                    self.query_one("#copilot-auth-url", Static).update(
+                        f"{verification_uri}"
+                    )
+                except Exception:
+                    pass
+
+            self.app.call_from_thread(show_code)
+            self.app.call_from_thread(
+                setattr, self, "status_message", "Waiting for you to authorize..."
+            )
+
+            # Step 3: Poll for token
+            access_token = poll_for_token(device_code=device_code, interval=interval, client_id=self._client_id or None)
+
+            # Success
+            self.app.call_from_thread(self.dismiss, access_token)
+
+        except DeviceFlowError as e:
+            self.app.call_from_thread(setattr, self, "status_message", f"Error: {e}")
+            import time
+
+            time.sleep(3)
+            self.app.call_from_thread(self.dismiss, None)
+
+        except Exception as e:
+            self.app.call_from_thread(
+                setattr, self, "status_message", f"Unexpected error: {e}"
+            )
+            import time
+
+            time.sleep(3)
+            self.app.call_from_thread(self.dismiss, None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "copilot-auth-cancel":
+            self.dismiss(None)
+
+
 class SettingsScreen(Screen):
     """Full-screen settings interface."""
     
@@ -368,6 +542,7 @@ class SettingsScreen(Screen):
             ("openai", "OpenAI (GPT-4o Mini/4o)", "Fast, cheap, great quality"),
             ("anthropic", "Anthropic (Claude)", "Excellent quality, best for action items"),
             ("openrouter", "OpenRouter", "Access to 300+ models"),
+            ("copilot", "GitHub Copilot", "Included with Copilot subscription"),
             ("local", "Local (Ollama)", "Private, offline, slow"),
             ("none", "No AI", "Just transcripts, no summary"),
         ]
@@ -391,6 +566,8 @@ class SettingsScreen(Screen):
             widgets.extend(self.render_anthropic_settings())
         elif current_provider == "openrouter":
             widgets.extend(self.render_openrouter_settings())
+        elif current_provider == "copilot":
+            widgets.extend(self.render_copilot_settings())
         elif current_provider == "local":
             widgets.extend(self.render_local_ollama_settings())
         elif current_provider == "none":
@@ -510,6 +687,98 @@ class SettingsScreen(Screen):
         
         return widgets
     
+    def render_copilot_settings(self) -> list:
+        """Render GitHub Copilot-specific settings."""
+        widgets = []
+
+        widgets.append(
+            Static("GitHub Copilot Settings", classes="settings-section-title")
+        )
+
+        # Client ID input
+        widgets.append(Static("OAuth App Client ID", classes="settings-label"))
+        client_id = self.config.get("github_copilot_client_id", "")
+        client_id_input = Input(
+            value=client_id,
+            id="copilot-client-id-input",
+            classes="settings-input",
+            placeholder="Ov23li... (or set GITHUB_COPILOT_CLIENT_ID env var)",
+        )
+        widgets.append(client_id_input)
+        widgets.append(Static("Register at: https://github.com/settings/applications/new", classes="settings-hint"))
+
+        # Token input (direct entry)
+        widgets.append(Static("GitHub Token", classes="settings-label"))
+        token = self.config.get("github_copilot_token", "")
+        token_input = Input(
+            value=token,
+            password=True,
+            id="copilot-token-input",
+            classes="settings-input",
+            placeholder="ghp_... or gho_... (or set GITHUB_COPILOT_TOKEN env var)",
+        )
+        widgets.append(token_input)
+
+        # Auth status hint
+        has_token = bool(token)
+        if has_token:
+            widgets.append(Static("Status: Authenticated", classes="settings-hint"))
+        else:
+            widgets.append(Static("Status: Not authenticated", classes="settings-hint"))
+
+        # Device flow button as alternative
+        auth_label = (
+            "Re-authenticate with GitHub"
+            if has_token
+            else "Authenticate with GitHub (Device Flow)"
+        )
+        widgets.append(
+            Button(
+                auth_label,
+                variant="default" if has_token else "warning",
+                id="copilot-auth-button",
+            )
+        )
+        widgets.append(
+            Static(
+                "Requires an active GitHub Copilot subscription",
+                classes="settings-hint",
+            )
+        )
+
+        widgets.append(Static(""))  # Spacer
+
+        # Model selection
+        widgets.append(Static("Model", classes="settings-label"))
+        current_model = self.config.get("ai_model", "mini")
+
+        models = [
+            ("mini", "GPT-4o Mini", "Fast, lightweight"),
+            ("standard", "GPT-4o", "Best quality"),
+        ]
+
+        for model_id, model_name, model_desc in models:
+            is_current = model_id == current_model
+            marker = "●" if is_current else "○"
+            btn = Button(
+                f"{marker} {model_name}",
+                id=f"aimodel-{model_id}",
+                variant="primary" if is_current else "default",
+            )
+            btn.model_id = model_id
+            widgets.append(btn)
+            if is_current:
+                widgets.append(Static(f"  → {model_desc}", classes="settings-hint"))
+
+        widgets.append(
+            Static(
+                "No per-request cost - included in your Copilot subscription",
+                classes="settings-hint",
+            )
+        )
+
+        return widgets
+
     def render_local_ollama_settings(self) -> list:
         """Render local Ollama settings."""
         widgets = []
@@ -631,6 +900,8 @@ class SettingsScreen(Screen):
                     self.config["ai_model"] = "haiku"
                 elif event.button.provider_id == "openrouter":
                     self.config["ai_model"] = "balanced"
+                elif event.button.provider_id == "copilot":
+                    self.config["ai_model"] = "mini"
                 elif event.button.provider_id == "local":
                     # `or` fallback so an empty-string ollama_model still
                     # produces a runnable default (dict.get only fills in the
@@ -655,6 +926,10 @@ class SettingsScreen(Screen):
         elif button_id == "install-model-button":
             self.action_install_model()
         
+        # Copilot authentication
+        elif button_id == "copilot-auth-button":
+            self.action_copilot_auth()
+
         # Save/Cancel
         elif button_id == "save-button":
             self.action_save()
@@ -718,6 +993,23 @@ class SettingsScreen(Screen):
         else:
             self.app.notify("✗ Model installation failed", severity="error")
     
+    def action_copilot_auth(self) -> None:
+        """Start the GitHub Copilot device flow authentication."""
+        self.app.push_screen(CopilotAuthScreen(client_id=self.config.get("github_copilot_client_id", "")), self.handle_copilot_auth)
+
+    async def handle_copilot_auth(self, access_token: Optional[str]) -> None:
+        """Handle completion of Copilot authentication."""
+        if access_token:
+            self.config["github_copilot_token"] = access_token
+            self.app.notify(
+                "GitHub Copilot authenticated successfully!", severity="information"
+            )
+            await self.refresh_content()
+        else:
+            self.app.notify(
+                "Copilot authentication cancelled or failed", severity="warning"
+            )
+
     def action_save(self) -> None:
         """Save settings and close."""
         # Update config from inputs (only if they're currently mounted)
@@ -778,6 +1070,20 @@ class SettingsScreen(Screen):
         except Exception:
             pass
         
+        try:
+            copilot_token = self.query("#copilot-token-input")
+            if copilot_token:
+                self.config["github_copilot_token"] = copilot_token[0].value.strip()
+        except Exception:
+            pass
+
+        try:
+            copilot_client_id = self.query("#copilot-client-id-input")
+            if copilot_client_id:
+                self.config["github_copilot_client_id"] = copilot_client_id[0].value.strip()
+        except Exception:
+            pass
+
         # Create config object and validate
         new_config = AppConfig.from_dict(self.config)
         valid, error = validate_config(new_config)
