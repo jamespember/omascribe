@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # make real network calls (and so individual tests can monkeypatch them
 # back without interference). Tests that need a key should provide a
 # fake one explicitly via monkeypatch.setenv.
-for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"):
+for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "GITHUB_COPILOT_TOKEN"):
     os.environ.pop(key, None)
 
 # Redirect XDG_CONFIG_HOME to a throwaway tempdir BEFORE any meeting_notes

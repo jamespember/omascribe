@@ -5,8 +5,13 @@ configured in MODELS dicts haven't drifted from what the providers actually
 accept. If a provider deprecates a model, you'd update both the constant
 here and the source.
 """
+import sys
+from types import SimpleNamespace
+
+import meeting_notes.copilot_auth as copilot_auth
 from meeting_notes.ai_summarizer import (
     AnthropicSummarizer,
+    CopilotSummarizer,
     OpenAISummarizer,
     OpenRouterSummarizer,
 )
@@ -50,6 +55,43 @@ def test_openrouter_models_have_required_fields():
     for tier, info in OpenRouterSummarizer.MODELS.items():
         for field in ("id", "name"):
             assert field in info, f"OpenRouter {tier} missing {field}"
+
+
+def test_copilot_summarizer_exchanges_oauth_token_for_session_token(monkeypatch):
+    created_clients = []
+
+    class FakeTokenManager:
+        def __init__(self, github_token):
+            self.github_token = github_token
+            self.invalidated = False
+
+        def get_token(self):
+            return "copilot-session-token"
+
+        def invalidate(self):
+            self.invalidated = True
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            created_clients.append(kwargs)
+
+    monkeypatch.setattr(copilot_auth, "CopilotTokenManager", FakeTokenManager)
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+
+    summarizer = CopilotSummarizer(api_key="github-oauth-token", model="mini")
+    client = summarizer._get_client()
+
+    assert client is not None
+    assert summarizer._token_manager.github_token == "github-oauth-token"
+    assert created_clients[0]["api_key"] == "copilot-session-token"
+    assert created_clients[0]["api_key"] != "github-oauth-token"
+    assert created_clients[0]["base_url"] == "https://api.githubcopilot.com"
+
+
+def test_copilot_models_have_required_fields():
+    for tier, info in CopilotSummarizer.MODELS.items():
+        for field in ("id", "name"):
+            assert field in info, f"Copilot {tier} missing {field}"
 
 
 def test_anthropic_summarizer_requires_api_key(monkeypatch):

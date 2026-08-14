@@ -459,3 +459,138 @@ class OpenRouterSummarizer(BaseSummarizer):
                     logger.error(f"All {max_retries} attempts failed for OpenRouter API call")
                     logger.error(error_msg, exc_info=True)
                     raise
+
+
+class CopilotSummarizer(BaseSummarizer):
+    """Summarizer using GitHub Copilot API (included with Copilot subscription)."""
+
+    MODELS = {
+        "mini": {
+            "id": "gpt-4o-mini",
+            "name": "GPT-4o Mini (Copilot)",
+        },
+        "standard": {
+            "id": "gpt-4o",
+            "name": "GPT-4o (Copilot)",
+        },
+    }
+
+    def __init__(self, api_key: Optional[str] = None, model: str = "mini"):
+        """
+        Initialize Copilot summarizer.
+
+        Args:
+            api_key: GitHub OAuth access token (from device flow authentication).
+            model: Model tier - "mini" (gpt-4o-mini) or "standard" (gpt-4o).
+        """
+        if not api_key:
+            raise ValueError(
+                "GitHub Copilot token required. "
+                "Authenticate via Settings > GitHub Copilot > Authenticate with GitHub."
+            )
+
+        if model not in self.MODELS:
+            raise ValueError(
+                f"Invalid model: {model}. Choose from: {list(self.MODELS.keys())}"
+            )
+
+        self.model_config = self.MODELS[model]
+        self.model = self.model_config["id"]
+
+        try:
+            from .copilot_auth import COPILOT_API_BASE, CopilotTokenManager
+
+            self._token_manager = CopilotTokenManager(api_key)
+            self.copilot_api_base = COPILOT_API_BASE
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize Copilot auth: {e}")
+
+        try:
+            from openai import OpenAI
+
+            self._openai_class = OpenAI
+        except ImportError:
+            raise ImportError("openai package not installed. Run: pip install openai")
+
+        self._client = None
+        self._current_token = None
+
+    def _get_client(self):
+        """Get an OpenAI client using a short-lived Copilot session token."""
+        from meeting_notes import __version__
+
+        token = self._token_manager.get_token()
+
+        if token != self._current_token:
+            self._client = self._openai_class(
+                api_key=token,
+                base_url=self.copilot_api_base,
+                default_headers={
+                    "Openai-Intent": "conversation-edits",
+                    "User-Agent": f"meeting-notes/{__version__}",
+                },
+            )
+            self._current_token = token
+
+        return self._client
+
+    def summarize(self, transcript: str, user_notes: str = "") -> MeetingSummary:
+        """Generate summary using GitHub Copilot with retry logic."""
+        logger.info(f"Generating AI summary with {self.model_config['name']}...")
+        logger.info(f"Transcript: {len(transcript.split())} words")
+        print(f"Generating AI summary with {self.model_config['name']}...")
+        print(f"Transcript: {len(transcript.split())} words")
+
+        max_retries = 2
+        retry_delay = 2  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                client = self._get_client()
+
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": self._build_prompt(
+                                transcript, user_notes=user_notes
+                            ),
+                        }
+                    ],
+                    temperature=0.3,
+                )
+
+                # Log token usage if available (no cost tracking - included in subscription)
+                if response.usage:
+                    total_tokens = (
+                        response.usage.prompt_tokens + response.usage.completion_tokens
+                    )
+                    logger.info(
+                        f"Summary generated ({total_tokens} tokens, included in Copilot subscription)"
+                    )
+                    print(
+                        f"Summary generated ({total_tokens} tokens, included in Copilot subscription)"
+                    )
+                else:
+                    logger.info("Summary generated (Copilot)")
+                    print("Summary generated (Copilot)")
+
+                return self._parse_response(response.choices[0].message.content)
+
+            except Exception as e:
+                error_msg = f"Attempt {attempt + 1}/{max_retries} failed: {type(e).__name__}: {e}"
+
+                if attempt < max_retries - 1:
+                    # If it's a token error, force a refresh before retrying
+                    self._current_token = None
+                    self._token_manager.invalidate()
+                    logger.warning(error_msg + f" - Retrying in {retry_delay}s...")
+                    print(f"Warning: {error_msg} - Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(
+                        f"All {max_retries} attempts failed for Copilot API call"
+                    )
+                    logger.error(error_msg, exc_info=True)
+                    raise
