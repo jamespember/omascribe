@@ -20,8 +20,23 @@ class MeetingSummary:
     participants: List[str]
 
 
+class SummaryTruncated(RuntimeError):
+    """The model stopped at its output-token limit before finishing."""
+
+
 class BaseSummarizer:
     """Base class for AI summarizers with shared prompt and parsing logic."""
+
+    def _raise_if_truncated(self, stop_reason, limit_reasons=("length",)) -> None:
+        """A cut-off response parses into a note that looks finished ("No
+        overview generated", half a key point, no action items), so it is an
+        error, not a summary. Reasoning models make this likely: they spend
+        output tokens thinking before writing any visible text."""
+        reason = getattr(stop_reason, "value", stop_reason)
+        if reason in limit_reasons:
+            raise SummaryTruncated(
+                f"{self.model_config['name']} hit its output-token limit before finishing the summary"
+            )
     
     def _build_prompt(self, transcript: str, user_notes: str = "") -> str:
         """Build the prompt for the AI model (shared across all providers)."""
@@ -270,6 +285,7 @@ class OpenAISummarizer(BaseSummarizer):
                     messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes)}],
                     temperature=0.3,
                 )
+                self._raise_if_truncated(response.choices[0].finish_reason)
                 
                 # Calculate cost
                 input_tokens = response.usage.prompt_tokens
@@ -284,6 +300,8 @@ class OpenAISummarizer(BaseSummarizer):
                 
                 return self._parse_response(response.choices[0].message.content)
                 
+            except SummaryTruncated:
+                raise  # the same request would be cut off the same way
             except Exception as e:
                 error_msg = f"Attempt {attempt + 1}/{max_retries} failed: {type(e).__name__}: {e}"
                 
@@ -315,6 +333,12 @@ class AnthropicSummarizer(BaseSummarizer):
         }
     }
     
+    # 2000 was too small: a long meeting's summary alone can exceed it, and
+    # the cut-off response was silently saved as a half-empty note. 16000
+    # stays under the Anthropic SDK's non-streaming time guard, and only
+    # tokens actually generated are billed.
+    MAX_TOKENS = 16000
+
     def __init__(self, api_key: Optional[str] = None, model: str = "haiku"):
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
@@ -346,10 +370,11 @@ class AnthropicSummarizer(BaseSummarizer):
             try:
                 response = self.client.messages.create(
                     model=self.model,
-                    max_tokens=2000,
+                    max_tokens=self.MAX_TOKENS,
                     temperature=0.3,
                     messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes)}]
                 )
+                self._raise_if_truncated(response.stop_reason, limit_reasons=("max_tokens",))
                 
                 # Calculate cost
                 input_tokens = response.usage.input_tokens
@@ -364,6 +389,8 @@ class AnthropicSummarizer(BaseSummarizer):
                 
                 return self._parse_response(response.content[0].text)
                 
+            except SummaryTruncated:
+                raise  # the same request would be cut off the same way
             except Exception as e:
                 error_msg = f"Attempt {attempt + 1}/{max_retries} failed: {type(e).__name__}: {e}"
                 
@@ -433,6 +460,8 @@ class OpenRouterSummarizer(BaseSummarizer):
                     temperature=0.3,
                 )
                 
+                self._raise_if_truncated(response.choices[0].finish_reason)
+
                 # Extract response text
                 response_text = response.choices[0].message.content
                 
@@ -448,6 +477,8 @@ class OpenRouterSummarizer(BaseSummarizer):
                 
                 return self._parse_response(response_text)
                 
+            except SummaryTruncated:
+                raise  # the same request would be cut off the same way
             except Exception as e:
                 error_msg = f"Attempt {attempt + 1}/{max_retries} failed: {type(e).__name__}: {e}"
                 

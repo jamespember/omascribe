@@ -67,3 +67,80 @@ def test_anthropic_summarizer_rejects_unknown_model():
     import pytest
     with pytest.raises((KeyError, ValueError)):
         AnthropicSummarizer(api_key="sk-ant-test", model="not-a-tier")
+
+
+
+# ---------------------------------------------------------------------------
+# Truncated responses must fail loudly, not become a half-empty note.
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from omascribe.ai_summarizer import SummaryTruncated  # noqa: E402
+
+GOOD = "OVERVIEW:\nA call.\n\nKEY POINTS:\n- One\n\nACTION ITEMS:\n- None identified\n"
+
+
+def _openai_like(finish_reason, calls):
+    def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(finish_reason=finish_reason, message=SimpleNamespace(content=GOOD))],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=10, total_tokens=20),
+        )
+    return create
+
+
+def _no_sleep(monkeypatch):
+    monkeypatch.setattr("omascribe.ai_summarizer.time.sleep", lambda s: None)
+
+
+def test_openai_truncation_raises_without_retry(monkeypatch):
+    import pytest
+    _no_sleep(monkeypatch)
+    s = OpenAISummarizer(api_key="sk-test")
+    calls = []
+    s.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_openai_like("length", calls))))
+    with pytest.raises(SummaryTruncated):
+        s.summarize("hello")
+    assert len(calls) == 1
+
+
+def test_openai_complete_response_parses(monkeypatch):
+    s = OpenAISummarizer(api_key="sk-test")
+    calls = []
+    s.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_openai_like("stop", calls))))
+    assert s.summarize("hello").overview == "A call."
+
+
+def test_anthropic_truncation_raises_and_budget_is_large(monkeypatch):
+    import pytest
+    _no_sleep(monkeypatch)
+    s = AnthropicSummarizer(api_key="sk-ant-test")
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            stop_reason="max_tokens",
+            content=[SimpleNamespace(text="OVERVIEW:\nhalf a sen")],
+            usage=SimpleNamespace(input_tokens=10, output_tokens=16000),
+        )
+
+    s.client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    with pytest.raises(SummaryTruncated):
+        s.summarize("hello")
+    assert len(calls) == 1
+    assert calls[0]["max_tokens"] >= 16000
+
+
+def test_openrouter_truncation_raises(monkeypatch):
+    import pytest
+    _no_sleep(monkeypatch)
+    s = OpenRouterSummarizer.__new__(OpenRouterSummarizer)
+    s.model_config = OpenRouterSummarizer.MODELS["balanced"]
+    s.model = s.model_config["id"]
+    calls = []
+    s.client = SimpleNamespace(chat=SimpleNamespace(send=_openai_like("length", calls)))
+    with pytest.raises(SummaryTruncated):
+        s.summarize("hello")
