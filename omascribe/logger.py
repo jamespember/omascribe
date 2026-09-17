@@ -29,7 +29,13 @@ def get_log_dir() -> Path:
     return log_dir
 
 
-def setup_logging(debug: bool = False) -> None:
+# Chatty per-request DEBUG from the HTTP stacks behind the cloud providers.
+# Every AssemblyAI poll and every TLS handshake step would otherwise land in
+# omascribe.log; warnings and errors from them still come through.
+NOISY_LIBRARY_LOGGERS = ("urllib3", "httpx", "httpx2", "httpcore", "httpcore2", "openai", "anthropic")
+
+
+def setup_logging(debug: bool = False, console: bool = False) -> None:
     """
     Set up application-wide logging.
     
@@ -39,6 +45,10 @@ def setup_logging(debug: bool = False) -> None:
     
     Args:
         debug: If True, set console output to DEBUG level
+        console: Also log to stderr. Off by default because the TUI owns the
+            terminal: this handler is created at import time, before Textual
+            swaps out sys.stderr, so it keeps the REAL stderr and every INFO
+            line is painted straight over the running interface.
     """
     log_dir = get_log_dir()
     
@@ -52,11 +62,15 @@ def setup_logging(debug: bool = False) -> None:
     root_logger.handlers.clear()
     
     # 1. Console handler - INFO or DEBUG depending on debug flag
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.DEBUG if debug else logging.INFO)
-    console_formatter = logging.Formatter('%(message)s')
-    console_handler.setFormatter(console_formatter)
-    root_logger.addHandler(console_handler)
+    if console:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.DEBUG if debug else logging.INFO)
+        console_formatter = logging.Formatter('%(message)s')
+        console_handler.setFormatter(console_formatter)
+        root_logger.addHandler(console_handler)
+
+    for name in NOISY_LIBRARY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.DEBUG if debug else logging.WARNING)
     
     # 2. Error file handler - Only errors and above
     error_log = log_dir / "errors.log"

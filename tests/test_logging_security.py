@@ -24,3 +24,17 @@ def test_log_files_are_private(tmp_path, monkeypatch):
 
     for handler in logging.getLogger().handlers:
         handler.close()
+
+
+def test_tui_logging_never_writes_to_the_terminal(tmp_path, monkeypatch):
+    """A stderr handler paints log lines over the running Textual UI."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    logger.setup_logging()
+    try:
+        streams = [h for h in logging.getLogger().handlers
+                   if type(h) is logging.StreamHandler]
+        assert streams == []
+        assert logging.getLogger("urllib3").level == logging.WARNING
+    finally:
+        for handler in logging.getLogger().handlers:
+            handler.close()
