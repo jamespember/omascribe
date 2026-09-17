@@ -56,12 +56,15 @@ if ! command -v pactl &> /dev/null; then
     echo "ERROR: pactl not found. Please install Pulse compatibility tools:"
     echo "   Arch/Omarchy:   omarchy pkg add libpulse"
     echo "   Ubuntu/Debian:  sudo apt install pulseaudio-utils"
+    echo "   Fedora/RHEL:    sudo dnf install pulseaudio-utils"
     exit 1
 fi
 
 if ! command -v parec &> /dev/null && ! command -v pw-record &> /dev/null; then
     echo "ERROR: neither parec nor pw-record was found. Install an audio capture tool:"
     echo "   Arch/Omarchy:   omarchy pkg add pipewire libpulse"
+    echo "   Ubuntu/Debian:  sudo apt install pipewire-pulse pulseaudio-utils"
+    echo "   Fedora/RHEL:    sudo dnf install pipewire-utils pulseaudio-utils"
     exit 1
 fi
 
@@ -69,6 +72,11 @@ if ! command -v ffmpeg &> /dev/null; then
     echo "ERROR: ffmpeg not found. Please install it:"
     echo "   Arch:           sudo pacman -S ffmpeg"
     echo "   Ubuntu/Debian:  sudo apt install ffmpeg"
+    # On stock Fedora only 'ffmpeg-free' is available (patents); the swap
+    # pulls in RPM Fusion's full ffmpeg. Give the two-liner rather than
+    # sending users to hunt for the incantation.
+    echo "   Fedora/RHEL:    sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-\$(rpm -E %fedora).noarch.rpm \\"
+    echo "                   && sudo dnf swap ffmpeg-free ffmpeg --allowerasing"
     exit 1
 fi
 
