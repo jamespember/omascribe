@@ -83,6 +83,7 @@ echo "Installing Python dependencies..."
 mkdir -p "$HOME/.local/bin"
 ln -sfn "$VENV_DIR/bin/omascribe" "$HOME/.local/bin/omascribe"
 ln -sfn "$VENV_DIR/bin/omascribe-status" "$HOME/.local/bin/omascribe-status"
+ln -sfn "$VENV_DIR/bin/omascribe-panel" "$HOME/.local/bin/omascribe-panel"
 
 if command -v omarchy >/dev/null 2>&1 && [[ $(omarchy version) == 4.* ]]; then
     "$ROOT_DIR/integrations/omarchy/install.sh"
