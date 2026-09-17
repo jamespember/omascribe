@@ -574,6 +574,87 @@ class ConfirmDeleteScreen(ModalScreen):
         self.dismiss(False)
 
 
+class ImportPickerScreen(ModalScreen):
+    """Modal picker for importing an existing audio file for processing.
+
+    Lists supported audio files in the configured recordings directory,
+    sorted by most recently modified first. Selecting a file dismisses the
+    modal with the Path; cancelling dismisses with None.
+
+    Ported from @vVasile29's #14 onto the renamed omascribe/ package.
+    """
+
+    CSS = """
+    ImportPickerScreen {
+        align: center middle;
+    }
+    #import-dialog {
+        width: 70%;
+        max-height: 80%;
+        background: $surface;
+        border: round $primary;
+        padding: 1 2;
+    }
+    #import-hint {
+        margin-bottom: 1;
+        color: $text-muted;
+    }
+    #import-list {
+        height: 1fr;
+        border: round $primary-darken-2;
+    }
+    #import-footer {
+        margin-top: 1;
+        color: $text-muted;
+        text-align: center;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Cancel", show=True),
+        Binding("enter", "select", "Process", show=True),
+    ]
+
+    def __init__(self, audio_files: list, recordings_dir: str) -> None:
+        super().__init__()
+        self.audio_files = audio_files
+        self.recordings_dir = recordings_dir
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="import-dialog"):
+            yield Static("Import Recording", classes="panel-title")
+            yield Static(
+                f"Select a file from {self.recordings_dir} to transcribe and summarise:",
+                id="import-hint",
+            )
+            yield ListView(id="import-list")
+            yield Static("↑↓/j/k navigate  Enter select  Esc cancel", id="import-footer")
+
+    def on_mount(self) -> None:
+        lv = self.query_one("#import-list", ListView)
+        for f in self.audio_files:
+            size_mb = f.stat().st_size / (1024 * 1024)
+            label = f"{f.name}  ({size_mb:.1f} MB)"
+            lv.append(ListItem(Static(label)))
+        if self.audio_files:
+            lv.index = 0
+
+    def action_select(self) -> None:
+        lv = self.query_one("#import-list", ListView)
+        if lv.index is not None and lv.index < len(self.audio_files):
+            self.dismiss(self.audio_files[lv.index])
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        self.action_select()
+
+    def on_key(self, event) -> None:
+        # lazygit-style hjkl on top of the arrow keys
+        if event.key == "j":
+            self.query_one("#import-list", ListView).action_cursor_down()
+        elif event.key == "k":
+            self.query_one("#import-list", ListView).action_cursor_up()
+
+
 class ConfirmDiscardScreen(ModalScreen[bool]):
     """Confirm destructive cancellation of an active recording."""
 
@@ -808,6 +889,7 @@ class OmascribeApp(App):
     
     BINDINGS = [
         Binding("r", "start_recording", "Record", show=True),
+        Binding("i", "import_recording", "Import", show=True),
         Binding("s", "stop_recording", "Stop", show=False, priority=True),
         Binding("x", "cancel_recording", "Cancel", show=False, priority=True),
         Binding("o", "open_in_editor", "Open", show=True),
@@ -1040,6 +1122,10 @@ class OmascribeApp(App):
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         """Control which actions are available based on recording state."""
         if action == "start_recording":
+            return not self.is_recording and not self.is_processing
+        elif action == "import_recording":
+            # Same as start_recording: don't allow starting a new pipeline
+            # while one is already running.
             return not self.is_recording and not self.is_processing
         elif action in ["stop_recording", "cancel_recording"]:
             return self.is_recording
@@ -1354,6 +1440,53 @@ class OmascribeApp(App):
                 except Exception as exc:
                     logger.debug(f"level-meter: error stopping {attr}: {exc}")
                 setattr(self, attr, None)
+
+    # Audio extensions accepted by import_recording. These are the ones ffmpeg
+    # reads without extra codecs on a stock install, plus mp4 because Zoom /
+    # Teams recordings arrive as .mp4 with an audio track.
+    IMPORT_AUDIO_EXTENSIONS = ("*.wav", "*.mp3", "*.m4a", "*.ogg", "*.flac", "*.mp4")
+
+    def action_import_recording(self) -> None:
+        """Pick an existing audio file from the recordings dir and process it.
+
+        Zoom, Teams, phone voice memos etc. produce files outside this app —
+        this lets the transcribe/summarise pipeline run on them without a
+        workaround. Feature suggested by @vVasile29 in #14.
+        """
+        if self.is_recording or self.is_processing:
+            self.notify("Wait for the current recording to finish", severity="warning")
+            return
+
+        recordings_dir = Path(self.config.recordings_dir).expanduser()
+        recordings_dir.mkdir(parents=True, exist_ok=True)
+
+        audio_files = []
+        for pattern in self.IMPORT_AUDIO_EXTENSIONS:
+            audio_files.extend(recordings_dir.glob(pattern))
+        # Most recently modified first — matches "the file I just dropped in".
+        audio_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+        if not audio_files:
+            self.notify(
+                f"No audio files found in {recordings_dir}. "
+                "Drop a .wav / .m4a / .mp3 / .mp4 file there and try again.",
+                severity="warning",
+            )
+            return
+
+        def on_file_selected(selected_path) -> None:
+            if selected_path is None:
+                return
+            logger.info(f"Importing recording: {selected_path}")
+            self.is_processing = True
+            self.refresh_bindings()
+            self._write_desktop_status("processing")
+            self.notify("Processing imported recording…", severity="information")
+            # process_recording is @work(exclusive=True, thread=True) so this
+            # returns immediately and the pipeline runs in the background.
+            self.process_recording(str(selected_path), meeting_title=None, user_notes="")
+
+        self.push_screen(ImportPickerScreen(audio_files, self.config.recordings_dir), on_file_selected)
 
     def action_start_recording(self) -> None:
         """Start recording and switch to full-screen recording view."""

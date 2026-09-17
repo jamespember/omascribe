@@ -173,6 +173,88 @@ async def test_stop_failure_restores_library_view(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_import_recording_with_empty_dir_notifies(tmp_path, monkeypatch):
+    """action_import_recording should not open the modal when there are no
+    audio files — it should notify and no-op. Guards @vVasile29's #14 port."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    app = OmascribeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        notifications = []
+        original_notify = app.notify
+        app.notify = lambda msg, **kw: notifications.append((msg, kw))
+        try:
+            app.action_import_recording()
+            await pilot.pause()
+        finally:
+            app.notify = original_notify
+
+        assert len(app.screen_stack) == 1, "modal should not open when recordings dir is empty"
+        assert any("No audio files" in msg for msg, _ in notifications), notifications
+        app.exit()
+
+
+@pytest.mark.asyncio
+async def test_import_recording_opens_picker_and_hands_file_to_pipeline(tmp_path, monkeypatch):
+    """When files exist, the picker mounts, Enter selects the newest file,
+    and it flows into process_recording (which we stub so we don't actually
+    load Whisper / call cloud APIs)."""
+    from pathlib import Path
+    import time as _time
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    recordings_dir = tmp_path / "recordings"
+    recordings_dir.mkdir()
+    # Two files, different mtimes; newest should be selected first.
+    older = recordings_dir / "older.wav"
+    older.write_bytes(b"RIFF")
+    _time.sleep(0.01)
+    newer = recordings_dir / "newer.wav"
+    newer.write_bytes(b"RIFF")
+
+    app = OmascribeApp()
+    app.config.recordings_dir = str(recordings_dir)
+
+    handoffs = []
+    app.process_recording = lambda path, meeting_title=None, user_notes="": handoffs.append(path)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_import_recording()
+        await pilot.pause()
+        assert len(app.screen_stack) == 2, "import picker should be pushed"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert handoffs == [str(newer)], f"expected newest-first selection, got {handoffs}"
+        app.exit()
+
+
+@pytest.mark.asyncio
+async def test_import_recording_disabled_while_processing(tmp_path, monkeypatch):
+    """check_action should hide the import binding once a pipeline is running,
+    the same way it hides start_recording."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    app = OmascribeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.check_action("import_recording", ()) is True
+        app.is_processing = True
+        assert app.check_action("import_recording", ()) is False
+        app.is_processing = False
+        app.is_recording = True
+        assert app.check_action("import_recording", ()) is False
+        app.exit()
+
+
+@pytest.mark.asyncio
 async def test_assemblyai_provider_and_transcriber_switching(tmp_path, monkeypatch):
     """The AssemblyAI key input is shared by the summariser and transcriber
     sections; whichever combination is selected, it must mount exactly once."""

@@ -42,6 +42,7 @@ omascribe
 | Key | Action |
 |-----|--------|
 | `r` | Start recording |
+| `i` | Import existing audio file (Zoom / Teams / voice memo) |
 | `s` | Stop and process |
 | `x` | Cancel recording |
 | `o` | Open in editor |
