@@ -412,11 +412,25 @@ class SettingsScreen(Screen):
         elif current_provider == "none":
             widgets.append(Static("✓ No AI summarization - transcripts only", classes="settings-hint"))
         
-        # Whisper Model (Transcription)
+        # Transcription backend
         widgets.append(Static(""))  # Spacer
-        widgets.append(Static("Whisper Model (Transcription)", classes="settings-label"))
-        widgets.append(Static(f"Current: {self.config.get('whisper_model', 'base')}", classes="settings-hint"))
-        widgets.append(Static("(Model selection coming soon)", classes="settings-hint"))
+        widgets.append(Static("Transcription", classes="settings-label"))
+        current_transcriber = self.config.get("transcriber", "whisper")
+        for transcriber_id, name, desc in [
+            ("assemblyai", "AssemblyAI (cloud)", "Speaker labels; audio is uploaded to AssemblyAI"),
+            ("whisper", f"Whisper {self.config.get('whisper_model', 'base')} (local)",
+             "Private and offline; needs the whisper extra installed"),
+        ]:
+            is_current = transcriber_id == current_transcriber
+            marker = "●" if is_current else "○"
+            btn = Button(f"{marker} {name}", id=f"transcriber-{transcriber_id}",
+                         variant="primary" if is_current else "default")
+            btn.transcriber_id = transcriber_id
+            widgets.append(btn)
+            if is_current:
+                widgets.append(Static(f"  → {desc}", classes="settings-hint"))
+        if current_transcriber == "assemblyai":
+            widgets.extend(self.render_assemblyai_key_input())
         
         return widgets
     
@@ -526,6 +540,16 @@ class SettingsScreen(Screen):
         
         return widgets
     
+    def render_assemblyai_key_input(self) -> list:
+        """AssemblyAI key field, shared by the summariser and transcriber."""
+        return [
+            Static("AssemblyAI API Key", classes="settings-label"),
+            Input(value=self.config.get("assemblyai_api_key", ""), password=True,
+                  id="assemblyai-key-input", classes="settings-input",
+                  placeholder="(or set ASSEMBLYAI_API_KEY env var)"),
+            Static("💡 Tip: Use environment variable for security", classes="settings-hint"),
+        ]
+
     def render_local_ollama_settings(self) -> list:
         """Render local Ollama settings."""
         widgets = []
@@ -778,6 +802,12 @@ class SettingsScreen(Screen):
                     self.config["ai_model"] = self.config.get("ollama_model") or "llama3.2:3b"
                 await self.refresh_content()
         
+        # Transcription backend
+        elif button_id and button_id.startswith("transcriber-"):
+            if hasattr(event.button, "transcriber_id"):
+                self.config["transcriber"] = event.button.transcriber_id
+                await self.refresh_content()
+
         # AI model selection (for cloud providers)
         elif button_id and button_id.startswith("aimodel-"):
             if hasattr(event.button, 'model_id'):
@@ -869,6 +899,7 @@ class SettingsScreen(Screen):
             "openai-key-input": "openai_api_key",
             "anthropic-key-input": "anthropic_api_key",
             "openrouter-key-input": "openrouter_api_key",
+            "assemblyai-key-input": "assemblyai_api_key",
         }.get(event.input.id or "")
         if field:
             self.config[field] = event.value
@@ -883,6 +914,7 @@ class SettingsScreen(Screen):
             "openai-key-input": "openai_api_key",
             "anthropic-key-input": "anthropic_api_key",
             "openrouter-key-input": "openrouter_api_key",
+            "assemblyai-key-input": "assemblyai_api_key",
         }.items():
             matches = self.query(f"#{widget_id}")
             if matches:

@@ -9,7 +9,7 @@ Built specifically for [Omarchy Quattro](https://omarchy.org/) — integrates na
 ## Features
 
 - **Record** — mic + system audio (PipeWire/PulseAudio)
-- **Transcribe** — local Whisper (CPU, privacy-first)
+- **Transcribe** — local Whisper (CPU, privacy-first), or AssemblyAI in the cloud with speaker labels
 - **Summarise** — cloud LLM (OpenAI, Anthropic, OpenRouter) or local Ollama
 - **Write notes** — add your own context during recording for better AI summaries
 - **Keyboard-driven** — Lazygit-inspired layout, no mouse required
@@ -74,6 +74,29 @@ ollama pull llama3.2:3b
 
 Or skip AI entirely — set `ai_provider: none` in settings for transcription-only.
 
+## Cloud transcription (optional)
+
+Local Whisper is the default. For faster transcription with **speaker
+labels** (`Speaker A:` / `Speaker B:`, which also lets the summary name who
+owns each action item), switch to [AssemblyAI](https://www.assemblyai.com/):
+
+```yaml
+transcriber: assemblyai       # whisper (default) | assemblyai
+```
+
+Set `ASSEMBLYAI_API_KEY` in the environment (or `assemblyai_api_key` in the
+config, or Settings → AI → Transcription). The recording is uploaded as 16 kHz
+mono FLAC — lossless for speech recognition and about a tenth of the WAV's
+size — with retries if the connection drops. Audio leaves your machine in this
+mode; use Whisper for meetings that must not.
+
+Whisper is an install extra, so a cloud-only install needs no torch:
+
+```bash
+pip install -e ".[assemblyai]"     # cloud transcription only
+pip install -e ".[all]"            # everything, including Whisper (what setup.sh installs)
+```
+
 ## Output
 
 Notes are saved as markdown in `notes/`:
@@ -123,6 +146,7 @@ recording_mode: combined      # mic | system | combined
 editor: nvim
 notes_dir: notes
 transcripts_dir: transcripts
+transcriber: whisper          # whisper | assemblyai
 ```
 
 ## Development

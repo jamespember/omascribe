@@ -19,7 +19,7 @@ from textual.screen import Screen, ModalScreen
 from textual import work
 
 from omascribe.recorder import AudioRecorder, list_active_sink_inputs
-from omascribe.transcriber import WhisperTranscriber
+from omascribe.transcriber import build_transcriber, format_segments
 from omascribe.note_maker import NoteMaker
 from omascribe.config import load_config, save_config, AppConfig, validate_config
 from omascribe.settings import SettingsScreen
@@ -848,29 +848,7 @@ class OmascribeApp(App):
         
         # Initialize components with config values
         self.recorder: Optional[AudioRecorder] = None
-        self.transcriber = WhisperTranscriber(
-            self.config.whisper_model,
-            device=self.config.whisper_device,
-        )
-        
-        # Get appropriate API key based on provider (check config first, then env vars)
-        api_key = None
-        if self.config.ai_provider == "openai":
-            api_key = self.config.openai_api_key or os.getenv("OPENAI_API_KEY")
-        elif self.config.ai_provider == "anthropic":
-            api_key = self.config.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-        elif self.config.ai_provider == "openrouter":
-            api_key = self.config.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
-        
-        self.note_maker = NoteMaker(
-            output_dir=self.config.notes_dir,
-            transcripts_dir=self.config.transcripts_dir,
-            ai_provider=self.config.ai_provider,
-            ai_model=self.config.ai_model,
-            api_key=api_key
-        )
-        self.notes_dir = Path(self.config.notes_dir).expanduser()
-        self.notes_dir.mkdir(parents=True, exist_ok=True)
+        self._build_pipeline()
         self.is_recording = False
         self.is_processing = False
         self.timer_interval = None
@@ -1649,16 +1627,18 @@ class OmascribeApp(App):
         """Process recording in background thread."""
         logger.info(f"Processing recording: {audio_path}")
         try:
-            # Load Whisper model (if not already loaded)
-            logger.info("Loading Whisper model")
-            self.call_from_thread(self._set_processing_stage, f"󰄬  Loading Whisper {self.config.whisper_model}…")
-            self.call_from_thread(self.notify, f"Loading Whisper {self.config.whisper_model} model...", severity="information")
-            self.transcriber.load_model()
+            engine = self.transcriber.describe()
+            if self.config.transcriber == "whisper":
+                # Load Whisper model (if not already loaded)
+                logger.info("Loading Whisper model")
+                self.call_from_thread(self._set_processing_stage, f"󰄬  Loading {engine}…")
+                self.call_from_thread(self.notify, f"Loading {engine} model...", severity="information")
+                self.transcriber.load_model()
             
             # Transcribe
-            logger.info("Starting transcription")
-            self.call_from_thread(self._set_processing_stage, "󰄬  Transcribing audio…")
-            self.call_from_thread(self.notify, "Transcribing audio (this may take a few minutes)...", severity="information")
+            logger.info(f"Starting transcription ({engine})")
+            self.call_from_thread(self._set_processing_stage, f"󰄬  Transcribing audio with {engine}…")
+            self.call_from_thread(self.notify, f"Transcribing audio with {engine} (this may take a few minutes)...", severity="information")
             result = self.transcriber.transcribe(audio_path)
             
             word_count = len(result.text.split())
@@ -1666,21 +1646,19 @@ class OmascribeApp(App):
             self.call_from_thread(self.notify, f"✓ Transcribed {word_count} words. Generating AI summary...", severity="information")
             
             # Format transcript
-            formatted = '\n\n'.join([
-                f'**[{int(seg.start // 60):02d}:{int(seg.start % 60):02d}]** {seg.text.strip()}'
-                for seg in result.segments
-            ])
+            formatted = format_segments(result.segments)
             
             # Generate note with AI summary (pass custom title if provided)
             logger.info("Creating note with AI summary")
             self.call_from_thread(self._set_processing_stage, "󰄬  Generating meeting note…")
-            duration = result.segments[-1].end if result.segments else 0
+            duration = result.duration or (result.segments[-1].end if result.segments else 0)
             note_path, transcript_path, ai_error = self.note_maker.create_note(
                 transcript_text=result.text,
                 formatted_transcript=formatted,
                 duration=duration,
                 title=meeting_title,
-                user_notes=user_notes
+                user_notes=user_notes,
+                summary_input=result.speaker_text(),
             )
             
             # Update UI
@@ -2232,6 +2210,19 @@ class OmascribeApp(App):
         banner.update(message)
         banner.display = bool(message)
     
+    def _build_pipeline(self) -> None:
+        """(Re)build transcriber and note maker from the current config."""
+        self.transcriber = build_transcriber(self.config)
+        self.note_maker = NoteMaker(
+            output_dir=self.config.notes_dir,
+            transcripts_dir=self.config.transcripts_dir,
+            ai_provider=self.config.ai_provider,
+            ai_model=self.config.ai_model,
+            api_key=self.config.provider_api_key(),
+        )
+        self.notes_dir = Path(self.config.notes_dir).expanduser()
+        self.notes_dir.mkdir(parents=True, exist_ok=True)
+
     def handle_settings_closed(self, new_config: Optional[AppConfig]) -> None:
         """Handle settings screen closing."""
         if new_config:
@@ -2239,30 +2230,8 @@ class OmascribeApp(App):
             self.config = new_config
             
             # Reinitialize components with new config
-            self.transcriber = WhisperTranscriber(
-                self.config.whisper_model,
-                device=self.config.whisper_device,
-            )
-            
-            # Get appropriate API key based on provider (check config first, then env vars)
-            api_key = None
-            if self.config.ai_provider == "openai":
-                api_key = self.config.openai_api_key or os.getenv("OPENAI_API_KEY")
-            elif self.config.ai_provider == "anthropic":
-                api_key = self.config.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-            elif self.config.ai_provider == "openrouter":
-                api_key = self.config.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
-            
-            self.note_maker = NoteMaker(
-                output_dir=self.config.notes_dir,
-                transcripts_dir=self.config.transcripts_dir,
-                ai_provider=self.config.ai_provider,
-                ai_model=self.config.ai_model,
-                api_key=api_key
-            )
-            self.notes_dir = Path(self.config.notes_dir).expanduser()
-            self.notes_dir.mkdir(parents=True, exist_ok=True)
-            
+            self._build_pipeline()
+
             # Reinitialize recorder if not currently recording
             if not self.is_recording:
                 self.recorder = AudioRecorder(

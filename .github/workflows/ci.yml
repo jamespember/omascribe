@@ -42,6 +42,7 @@ jobs:
             openai \
             anthropic \
             openrouter \
+            requests \
             pytest \
             pytest-asyncio \
             ruff
@@ -71,4 +72,5 @@ jobs:
             tests/test_meeting_routing.py \
             tests/test_desktop_integration.py \
             tests/test_logging_security.py \
-            tests/test_textual_smoke.py
+            tests/test_textual_smoke.py \
+            tests/test_assemblyai.py

@@ -23,11 +23,15 @@ class AppConfig:
     openai_api_key: str = ""  # OPENAI_API_KEY
     anthropic_api_key: str = ""  # ANTHROPIC_API_KEY
     openrouter_api_key: str = ""  # OPENROUTER_API_KEY
+    assemblyai_api_key: str = ""  # ASSEMBLYAI_API_KEY (transcription and LLM Gateway)
     
     # Legacy (kept for backwards compatibility)
     ollama_model: str = "llama3.2:3b"
     
     # Other settings
+    # Transcription backend: "whisper" (local, needs the whisper extra) or
+    # "assemblyai" (cloud, with speaker labels).
+    transcriber: str = "whisper"
     whisper_model: str = "base"
     # Whisper compute device: "cpu" (default, safe everywhere), "cuda" (force GPU),
     # or "auto" (let whisper/torch decide). "cpu" matches the README's
@@ -65,8 +69,22 @@ class AppConfig:
             data['anthropic_api_key'] = self._redact_key(data['anthropic_api_key'])
         if data.get('openrouter_api_key'):
             data['openrouter_api_key'] = self._redact_key(data['openrouter_api_key'])
+        if data.get('assemblyai_api_key'):
+            data['assemblyai_api_key'] = self._redact_key(data['assemblyai_api_key'])
         return data
     
+    def provider_api_key(self) -> Optional[str]:
+        """API key for the configured AI provider: config first, then env."""
+        env_vars = {
+            "openai": "OPENAI_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+        }
+        env_var = env_vars.get(self.ai_provider)
+        if not env_var:
+            return None
+        return getattr(self, f"{self.ai_provider}_api_key") or os.getenv(env_var)
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AppConfig':
         """Create config from dictionary."""
@@ -156,7 +174,7 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
         (is_valid, error_message)
     """
     string_fields = (
-        "ai_provider", "ai_model", "ollama_model", "whisper_model", "whisper_device",
+        "ai_provider", "ai_model", "ollama_model", "transcriber", "whisper_model", "whisper_device",
         "notes_dir", "recordings_dir", "transcripts_dir", "editor", "terminal_file_browser",
         "recording_mode", "mic_device", "system_device",
     )
@@ -207,6 +225,11 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
         if config.ai_model not in valid_models:
             return False, f"Invalid ai_model for OpenRouter: {config.ai_model}. Must be one of {valid_models}"
     
+    # Validate transcriber
+    valid_transcribers = ["whisper", "assemblyai"]
+    if config.transcriber not in valid_transcribers:
+        return False, f"Invalid transcriber: {config.transcriber}. Must be one of {valid_transcribers}"
+
     # Validate whisper model
     valid_whisper = ["tiny", "base", "small", "medium", "large"]
     if config.whisper_model not in valid_whisper:

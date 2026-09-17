@@ -9,6 +9,11 @@ and transparently fall back to CPU if the chosen device can't actually load
 the model.
 """
 
+import os
+import shutil
+import subprocess
+import tempfile
+import time
 from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass
@@ -24,6 +29,9 @@ class TranscriptSegment:
     start: float
     end: float
     text: str
+    # Diarised speaker label ("A", "B", ...). Whisper has no diarisation, so
+    # its segments leave this unset and render exactly as before.
+    speaker: Optional[str] = None
 
 
 @dataclass
@@ -33,6 +41,54 @@ class TranscriptResult:
     segments: list[TranscriptSegment]
     language: str
     duration: float
+
+    def to_dict(self) -> dict:
+        return {
+            "text": self.text,
+            "language": self.language,
+            "duration": self.duration,
+            "segments": [
+                {"start": s.start, "end": s.end, "text": s.text, "speaker": s.speaker} for s in self.segments
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TranscriptResult":
+        return cls(
+            text=data["text"],
+            language=data.get("language", "unknown"),
+            duration=float(data.get("duration") or 0),
+            segments=[TranscriptSegment(**seg) for seg in data.get("segments", [])],
+        )
+
+    def speaker_text(self) -> str:
+        """The transcript with one ``Speaker X: ...`` line per utterance.
+
+        This is what a summariser should see when speakers are known: it lets
+        action items name an owner. Without speaker labels it is just ``text``.
+        """
+        if not any(seg.speaker for seg in self.segments):
+            return self.text
+        return "\n".join(f"Speaker {seg.speaker}: {seg.text}" for seg in self.segments)
+
+
+def format_timestamp(seconds: float) -> str:
+    """Format seconds as MM:SS, or HH:MM:SS past the hour."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def format_segments(segments: list[TranscriptSegment]) -> str:
+    """Render segments as the markdown-ish body of a transcript file."""
+    lines = []
+    for seg in segments:
+        speaker = f" Speaker {seg.speaker}:" if seg.speaker else ""
+        lines.append(f"**[{format_timestamp(seg.start)}]{speaker}** {seg.text.strip()}")
+    return "\n\n".join(lines)
 
 
 _VALID_DEVICES = ("auto", "cpu", "cuda")
@@ -91,7 +147,13 @@ class WhisperTranscriber:
 
         # Import lazily so unit tests / non-transcription code paths don't
         # need the whisper/torch wheels installed.
-        import whisper  # noqa: WPS433 (intentional local import)
+        try:
+            import whisper  # noqa: WPS433 (intentional local import)
+        except ImportError:
+            raise ImportError(
+                "Local Whisper is not installed. Install the extra "
+                "(pip install -e '.[whisper]') or set transcriber: assemblyai."
+            )
 
         target = self._resolve_device()
         try:
@@ -180,23 +242,224 @@ class WhisperTranscriber:
 
     def format_transcript_with_timestamps(self, result: TranscriptResult) -> str:
         """Format transcript with timestamps for each segment."""
-        lines = []
-        for seg in result.segments:
-            timestamp = self._format_timestamp(seg.start)
-            lines.append(f"**[{timestamp}]** {seg.text}")
-        return "\n\n".join(lines)
+        return format_segments(result.segments)
 
     @staticmethod
     def _format_timestamp(seconds: float) -> str:
         """Format seconds as HH:MM:SS."""
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        secs = int(seconds % 60)
+        return format_timestamp(seconds)
 
-        if hours > 0:
-            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-        return f"{minutes:02d}:{secs:02d}"
+    def describe(self) -> str:
+        return f"Whisper {self.model_name}"
 
+
+class AssemblyAIError(RuntimeError):
+    """AssemblyAI rejected a request or failed the transcription.
+
+    ``status_code`` is the HTTP status when there was one. ``transient`` says
+    whether trying the same thing again later can succeed; None leaves that to
+    the status code. ``remote_failed`` means AssemblyAI accepted the job and
+    then reported it failed, so the transcript id is spent.
+    """
+
+    def __init__(self, message: str, status_code: Optional[int] = None,
+                 transient: Optional[bool] = None, remote_failed: bool = False):
+        super().__init__(message)
+        self.status_code = status_code
+        self.transient = transient
+        self.remote_failed = remote_failed
+
+
+class AssemblyAITranscriber:
+    """Transcribe audio files with AssemblyAI, with speaker labels.
+
+    Same interface as :class:`WhisperTranscriber`. The recording is uploaded,
+    transcribed server-side and polled for. Nothing is cached locally beyond
+    the returned text.
+    """
+
+    BASE_URL = "https://api.assemblyai.com"
+    # universal-3-5-pro covers 18 languages; universal-2 is the fallback the
+    # API routes to for anything else, so language detection never dead-ends.
+    SPEECH_MODELS = ["universal-3-5-pro", "universal-2"]
+    POLL_INTERVAL = 3.0
+    # A multi-hour meeting still finishes well inside this; it only exists so
+    # a stuck job cannot hang the processing worker forever.
+    TIMEOUT = 60 * 60
+
+    def __init__(self, api_key: Optional[str] = None, session=None):
+        # A missing key is reported when transcribing, not here: the app builds
+        # its transcriber at startup, and a missing key must not stop it from
+        # opening (settings, old notes and recording all still work).
+        self.api_key = api_key or os.getenv("ASSEMBLYAI_API_KEY") or ""
+        if session is None:
+            try:
+                import requests  # noqa: WPS433
+            except ImportError:
+                raise ImportError("requests is not installed. Run: pip install -e '.[assemblyai]'")
+            session = requests.Session()
+        self.session = session
+        # The key goes in verbatim: AssemblyAI rejects a "Bearer " prefix.
+        self.session.headers.update({"authorization": self.api_key})
+
+    def describe(self) -> str:
+        return "AssemblyAI"
+
+    def load_model(self) -> None:
+        """Nothing to load; kept so callers can treat both transcribers alike."""
+
+    def _check(self, response, action: str) -> dict:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        if response.status_code >= 400:
+            detail = payload.get("error") or response.text[:200]
+            raise AssemblyAIError(f"AssemblyAI {action} failed ({response.status_code}): {detail}",
+                                  status_code=response.status_code)
+        return payload
+
+    # AssemblyAI works on 16 kHz mono speech. The recorder writes 48 kHz PCM,
+    # ~11 MB a minute, and a 34-minute meeting (377 MB) had its upload cut off
+    # mid-TLS where 198 MB went through. FLAC at 16 kHz mono is lossless for
+    # what the model uses and roughly a tenth of the size.
+    UPLOAD_ATTEMPTS = 3
+
+    def _compress(self, audio_file: Path, scratch: Path) -> Path:
+        """A 16 kHz mono FLAC copy for upload; the original if ffmpeg can't make one."""
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            logger.warning("ffmpeg not found; uploading the original recording uncompressed")
+            return audio_file
+        target = scratch / f"{audio_file.stem}.flac"
+        try:
+            subprocess.run(
+                [ffmpeg, "-nostdin", "-loglevel", "error", "-y", "-i", str(audio_file),
+                 "-ac", "1", "-ar", "16000", "-c:a", "flac", str(target)],
+                check=True, capture_output=True, timeout=600,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            detail = getattr(exc, "stderr", b"") or b""
+            logger.warning(f"Could not compress for upload ({exc} {detail[:200]!r}); uploading the original")
+            return audio_file
+        return target
+
+    def _upload(self, upload_file: Path) -> dict:
+        """POST the file, retrying a dropped connection (the file is re-opened each time)."""
+        size_mb = upload_file.stat().st_size / (1024 * 1024)
+        for attempt in range(1, self.UPLOAD_ATTEMPTS + 1):
+            logger.info(f"Uploading {upload_file.name} ({size_mb:.1f} MB) to AssemblyAI, attempt {attempt}...")
+            try:
+                with upload_file.open("rb") as stream:
+                    response = self.session.post(f"{self.BASE_URL}/v2/upload", data=stream, timeout=600)
+            except OSError as exc:  # requests' ConnectionError/SSLError derive from OSError
+                if attempt == self.UPLOAD_ATTEMPTS:
+                    raise AssemblyAIError(f"AssemblyAI upload failed after {attempt} attempts: {exc}",
+                                          transient=True) from exc
+                logger.warning(f"Upload attempt {attempt} failed: {exc}")
+                time.sleep(2 * attempt)
+                continue
+            return self._check(response, "upload")
+        raise AssertionError("unreachable")
+
+    def transcribe(
+        self,
+        audio_path: str,
+        progress_callback: Optional[Callable[[float], None]] = None,
+    ) -> TranscriptResult:
+        """Upload, transcribe with speaker labels, and wait for the result."""
+        return self.wait(self.submit(audio_path))
+
+    def submit(self, audio_path: str) -> str:
+        """Compress, upload and request a transcript. Returns its id.
+
+        Split from wait() so a caller can persist the id before polling: a
+        retry or a restart then resumes the same transcript instead of
+        uploading the meeting again.
+        """
+        if not self.api_key:
+            raise ValueError("AssemblyAI API key required. Set ASSEMBLYAI_API_KEY environment variable.")
+        audio_file = Path(audio_path)
+        if not audio_file.exists():
+            logger.error(f"Audio file not found: {audio_file}")
+            raise FileNotFoundError(f"Audio file not found: {audio_file}")
+
+        with tempfile.TemporaryDirectory(prefix="omascribe-upload-") as scratch:
+            upload_file = self._compress(audio_file, Path(scratch))
+            upload = self._upload(upload_file)
+
+        job = self._check(
+            self.session.post(
+                f"{self.BASE_URL}/v2/transcript",
+                json={
+                    "audio_url": upload["upload_url"],
+                    "speech_models": self.SPEECH_MODELS,
+                    "speaker_labels": True,
+                    "language_detection": True,
+                },
+                timeout=60,
+            ),
+            "transcript request",
+        )
+        transcript_id = job["id"]
+        logger.info(f"AssemblyAI transcript {transcript_id} queued")
+        return transcript_id
+
+    def wait(self, transcript_id: str) -> TranscriptResult:
+        """Poll a submitted transcript until it completes, then build the result."""
+        if not self.api_key:
+            raise ValueError("AssemblyAI API key required. Set ASSEMBLYAI_API_KEY environment variable.")
+        logger.info(f"Waiting for AssemblyAI transcript {transcript_id}")
+        deadline = time.monotonic() + self.TIMEOUT
+        while True:
+            result = self._check(
+                self.session.get(f"{self.BASE_URL}/v2/transcript/{transcript_id}", timeout=60),
+                "transcript poll",
+            )
+            status = result.get("status")
+            if status == "completed":
+                break
+            if status == "error":
+                raise AssemblyAIError(f"AssemblyAI transcription failed: {result.get('error', 'unknown error')}",
+                                      transient=False, remote_failed=True)
+            if time.monotonic() > deadline:
+                raise AssemblyAIError(f"AssemblyAI transcript {transcript_id} still {status} after {self.TIMEOUT}s",
+                                      transient=True)
+            time.sleep(self.POLL_INTERVAL)
+
+        # Utterances are the diarised turns; words/segments without speakers
+        # would lose exactly what we came here for. Times are milliseconds.
+        segments = [
+            TranscriptSegment(
+                start=u["start"] / 1000,
+                end=u["end"] / 1000,
+                text=(u.get("text") or "").strip(),
+                speaker=u.get("speaker"),
+            )
+            for u in (result.get("utterances") or [])
+        ]
+        text = (result.get("text") or "").strip()
+        if not segments and text:
+            segments = [TranscriptSegment(start=0.0, end=float(result.get("audio_duration") or 0), text=text)]
+
+        duration = float(result.get("audio_duration") or (segments[-1].end if segments else 0.0))
+        language = result.get("language_code") or "unknown"
+        speakers = len({seg.speaker for seg in segments if seg.speaker})
+        logger.info(
+            f"Transcription complete: {len(segments)} utterances, {speakers} speakers, "
+            f"{duration:.1f}s, language: {language}, model: {result.get('speech_model_used', '?')}"
+        )
+        return TranscriptResult(text=text, segments=segments, language=language, duration=duration)
+
+    def format_transcript_with_timestamps(self, result: TranscriptResult) -> str:
+        return format_segments(result.segments)
+
+
+def build_transcriber(config) -> "WhisperTranscriber | AssemblyAITranscriber":
+    """Construct the transcriber the config asks for."""
+    if getattr(config, "transcriber", "whisper") == "assemblyai":
+        return AssemblyAITranscriber(api_key=config.assemblyai_api_key or None)
+    return WhisperTranscriber(config.whisper_model, device=config.whisper_device)
 
 if __name__ == "__main__":
     import sys

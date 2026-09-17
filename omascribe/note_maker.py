@@ -111,7 +111,8 @@ class NoteMaker:
         duration: float,
         title: Optional[str] = None,
         metadata: Optional[dict] = None,
-        user_notes: str = ""
+        user_notes: str = "",
+        summary_input: Optional[str] = None,
     ) -> tuple[str, str, Optional[str]]:
         """Create a markdown note and separate transcript file.
         
@@ -122,6 +123,9 @@ class NoteMaker:
             title: Optional meeting title
             metadata: Optional additional metadata
             user_notes: Optional notes written by user during recording
+            summary_input: What the summariser reads, when it should differ
+                from transcript_text (e.g. with speaker labels). Word counts
+                still come from transcript_text.
             
         Returns:
             Tuple of (note_path, transcript_path, error_message). error_message is None if no error occurred.
@@ -145,7 +149,7 @@ class NoteMaker:
                     logger.info("Generating AI summary with local Ollama")
                     print("Generating AI summary with local Ollama (this may take a while)...")
                     
-                ai_summary = self.summarizer.summarize(transcript_text, user_notes=user_notes)
+                ai_summary = self.summarizer.summarize(summary_input or transcript_text, user_notes=user_notes)
                 summary = {
                     'word_count': len(transcript_text.split()),
                     'ai_summary': ai_summary,
