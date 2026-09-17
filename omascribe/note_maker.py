@@ -17,14 +17,22 @@ except ImportError:
     OLLAMA_AVAILABLE = False
 
 try:
-    from .ai_summarizer import OpenAISummarizer, AnthropicSummarizer, OpenRouterSummarizer, AssemblyAISummarizer, DeepInfraSummarizer, MeetingSummary  # type: ignore
+    from .ai_summarizer import (  # type: ignore
+        OpenAISummarizer,
+        AnthropicSummarizer,
+        OpenRouterSummarizer,
+        AssemblyAISummarizer,
+        DeepInfraSummarizer,
+        CopilotSummarizer,
+        MeetingSummary,
+    )
     CLOUD_AVAILABLE = True
 except ImportError:
     CLOUD_AVAILABLE = False
     # Fallback MeetingSummary for type hints
     MeetingSummary = None  # type: ignore
 
-CLOUD_PROVIDERS = ("openai", "anthropic", "openrouter", "assemblyai", "deepinfra")
+CLOUD_PROVIDERS = ("openai", "anthropic", "openrouter", "assemblyai", "deepinfra", "copilot")
 
 
 class NoteMaker:
@@ -64,7 +72,14 @@ class NoteMaker:
                 self.ai_provider = "none"
             else:
                 try:
-                    from .ai_summarizer import OpenAISummarizer, AnthropicSummarizer, OpenRouterSummarizer, AssemblyAISummarizer, DeepInfraSummarizer  # type: ignore
+                    from .ai_summarizer import (  # type: ignore
+                        OpenAISummarizer,
+                        AnthropicSummarizer,
+                        OpenRouterSummarizer,
+                        AssemblyAISummarizer,
+                        DeepInfraSummarizer,
+                        CopilotSummarizer,
+                    )
                     
                     if ai_provider == "openai":
                         self.summarizer = OpenAISummarizer(api_key=api_key, model=ai_model)
@@ -90,6 +105,18 @@ class NoteMaker:
                         model_name = DeepInfraSummarizer.MODELS[ai_model]["name"]
                         logger.info(f"AI summarization enabled (DeepInfra: {model_name})")
                         
+                    elif ai_provider == "copilot":
+                        self.summarizer = CopilotSummarizer(
+                            api_key=api_key, model=ai_model
+                        )
+                        model_name = CopilotSummarizer.MODELS[ai_model]["name"]
+                        logger.info(
+                            f"AI summarization enabled (GitHub Copilot: {model_name})"
+                        )
+                        print(
+                            f"AI summarization enabled (GitHub Copilot: {model_name})"
+                        )
+
                 except Exception as e:
                     logger.error(f"Could not initialize cloud AI: {e}", exc_info=True)
                     print(f"Warning: Could not initialize cloud AI: {e}")

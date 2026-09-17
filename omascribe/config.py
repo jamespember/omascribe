@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 class AppConfig:
     """Application configuration."""
     # AI Summarization
-    ai_provider: str = "none"  # "openai", "anthropic", "openrouter", "assemblyai", "deepinfra", "local", or "none"
+    ai_provider: str = "none"  # "openai", "anthropic", "openrouter", "assemblyai", "deepinfra", "copilot", "local", or "none"
     ai_model: str = "haiku"  # Model tier (varies by provider)
     
     # API Keys (or set environment variables)
@@ -25,6 +25,8 @@ class AppConfig:
     openrouter_api_key: str = ""  # OPENROUTER_API_KEY
     assemblyai_api_key: str = ""  # ASSEMBLYAI_API_KEY (transcription and LLM Gateway)
     deepinfra_api_key: str = ""  # DEEPINFRA_API_KEY
+    github_copilot_token: str = ""  # OAuth token from GitHub Device Flow
+    github_copilot_client_id: str = ""  # GITHUB_COPILOT_CLIENT_ID
     
     # Legacy (kept for backwards compatibility)
     ollama_model: str = "llama3.2:3b"
@@ -74,10 +76,14 @@ class AppConfig:
             data['assemblyai_api_key'] = self._redact_key(data['assemblyai_api_key'])
         if data.get('deepinfra_api_key'):
             data['deepinfra_api_key'] = self._redact_key(data['deepinfra_api_key'])
+        if data.get('github_copilot_token'):
+            data['github_copilot_token'] = self._redact_key(data['github_copilot_token'])
         return data
     
     def provider_api_key(self) -> Optional[str]:
         """API key for the configured AI provider: config first, then env."""
+        # (attr, env) per provider. Copilot's field is named github_copilot_token
+        # rather than copilot_api_key so it's handled explicitly.
         env_vars = {
             "openai": "OPENAI_API_KEY",
             "anthropic": "ANTHROPIC_API_KEY",
@@ -85,6 +91,8 @@ class AppConfig:
             "assemblyai": "ASSEMBLYAI_API_KEY",
             "deepinfra": "DEEPINFRA_API_KEY",
         }
+        if self.ai_provider == "copilot":
+            return self.github_copilot_token or os.getenv("GITHUB_COPILOT_TOKEN")
         env_var = env_vars.get(self.ai_provider)
         if not env_var:
             return None
@@ -190,7 +198,7 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
         return False, "Invalid recording_retention_days: expected an integer"
 
     # Validate AI provider
-    valid_providers = ["openai", "anthropic", "openrouter", "assemblyai", "deepinfra", "local", "none"]
+    valid_providers = ["openai", "anthropic", "openrouter", "assemblyai", "deepinfra", "copilot", "local", "none"]
     if config.ai_provider not in valid_providers:
         return False, f"Invalid ai_provider: {config.ai_provider}. Must be one of {valid_providers}"
     
@@ -229,6 +237,19 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
         valid_models = ["cheap", "balanced", "premium"]
         if config.ai_model not in valid_models:
             return False, f"Invalid ai_model for OpenRouter: {config.ai_model}. Must be one of {valid_models}"
+    elif config.ai_provider == "copilot":
+        token = config.github_copilot_token or os.getenv("GITHUB_COPILOT_TOKEN")
+        if not token:
+            return False, (
+                "ai_provider is 'copilot' but not authenticated.\n"
+                "Set GITHUB_COPILOT_TOKEN environment variable or authenticate in Settings"
+            )
+        valid_models = ["mini", "standard"]
+        if config.ai_model not in valid_models:
+            return (
+                False,
+                f"Invalid ai_model for Copilot: {config.ai_model}. Must be one of {valid_models}",
+            )
     
     elif config.ai_provider in ("assemblyai", "deepinfra"):
         label = {"assemblyai": "AssemblyAI", "deepinfra": "DeepInfra"}[config.ai_provider]

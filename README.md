@@ -10,7 +10,7 @@ Built specifically for [Omarchy Quattro](https://omarchy.org/) — integrates na
 
 - **Record** — mic + system audio (PipeWire/PulseAudio)
 - **Transcribe** — local Whisper (CPU, privacy-first), or AssemblyAI in the cloud with speaker labels
-- **Summarise** — cloud LLM (OpenAI, Anthropic, OpenRouter) or local Ollama
+- **Summarise** — cloud LLM (OpenAI, Anthropic, OpenRouter, Copilot) or local Ollama
 - **Write notes** — add your own context during recording for better AI summaries
 - **Keyboard-driven** — Lazygit-inspired layout, no mouse required
 - **Omarchy-native** — bar status, notifications, app menu, and `SUPER+M` out of the box
@@ -149,7 +149,7 @@ Full transcripts with timestamps are saved separately in `transcripts/`.
 Settings are stored in `~/.config/omascribe/config.yaml`:
 
 ```yaml
-ai_provider: anthropic        # none | openai | anthropic | openrouter | assemblyai | deepinfra | local
+ai_provider: anthropic        # none | openai | anthropic | openrouter | assemblyai | deepinfra | copilot | local
 ai_model: haiku               # haiku/sonnet | mini/standard | cheap/balanced/premium
 whisper_model: base           # tiny | base | small | medium | large
 whisper_device: cpu           # cpu | cuda | auto
