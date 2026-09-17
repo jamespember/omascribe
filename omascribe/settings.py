@@ -384,6 +384,8 @@ class SettingsScreen(Screen):
             ("openai", "OpenAI (GPT-4o Mini/4o)", "Fast, cheap, great quality"),
             ("anthropic", "Anthropic (Claude)", "Excellent quality, best for action items"),
             ("openrouter", "OpenRouter", "Access to 300+ models"),
+            ("assemblyai", "AssemblyAI LLM Gateway (Claude)", "Same key as AssemblyAI transcription"),
+            ("deepinfra", "DeepInfra (Claude)", "Claude through DeepInfra's OpenAI-compatible API"),
             ("local", "Local (Ollama)", "Private, offline, slow"),
             ("none", "No AI", "Just transcripts, no summary"),
         ]
@@ -407,6 +409,10 @@ class SettingsScreen(Screen):
             widgets.extend(self.render_anthropic_settings())
         elif current_provider == "openrouter":
             widgets.extend(self.render_openrouter_settings())
+        elif current_provider == "assemblyai":
+            widgets.extend(self.render_assemblyai_settings())
+        elif current_provider == "deepinfra":
+            widgets.extend(self.render_deepinfra_settings())
         elif current_provider == "local":
             widgets.extend(self.render_local_ollama_settings())
         elif current_provider == "none":
@@ -429,7 +435,7 @@ class SettingsScreen(Screen):
             widgets.append(btn)
             if is_current:
                 widgets.append(Static(f"  → {desc}", classes="settings-hint"))
-        if current_transcriber == "assemblyai":
+        if current_transcriber == "assemblyai" and current_provider != "assemblyai":
             widgets.extend(self.render_assemblyai_key_input())
         
         return widgets
@@ -549,6 +555,51 @@ class SettingsScreen(Screen):
                   placeholder="(or set ASSEMBLYAI_API_KEY env var)"),
             Static("💡 Tip: Use environment variable for security", classes="settings-hint"),
         ]
+
+    def render_claude_tier_buttons(self) -> list:
+        """Haiku / Sonnet / Opus tier buttons, shared by the Claude-serving providers."""
+        widgets = []
+
+        widgets.append(Static("Model", classes="settings-label"))
+        current_model = self.config.get("ai_model", "sonnet")
+
+        models = [
+            ("haiku", "Claude Haiku 4.5", "Fast & cheapest"),
+            ("sonnet", "Claude Sonnet 5", "Best balance for action items ⭐"),
+            ("opus", "Claude Opus 5", "Highest quality"),
+        ]
+
+        for model_id, model_name, model_desc in models:
+            is_current = model_id == current_model
+            marker = "●" if is_current else "○"
+            btn = Button(f"{marker} {model_name}", id=f"aimodel-{model_id}",
+                         variant="primary" if is_current else "default")
+            btn.model_id = model_id
+            widgets.append(btn)
+            if is_current:
+                widgets.append(Static(f"  → {model_desc}", classes="settings-hint"))
+
+        return widgets
+
+    def render_assemblyai_settings(self) -> list:
+        """Render AssemblyAI LLM Gateway settings."""
+        widgets = [Static("AssemblyAI LLM Gateway Settings", classes="settings-section-title")]
+        widgets.extend(self.render_claude_tier_buttons())
+        widgets.extend(self.render_assemblyai_key_input())
+        return widgets
+
+    def render_deepinfra_settings(self) -> list:
+        """Render DeepInfra settings."""
+        widgets = [Static("DeepInfra Settings", classes="settings-section-title")]
+        widgets.extend(self.render_claude_tier_buttons())
+        widgets.extend([
+            Static("DeepInfra API Key", classes="settings-label"),
+            Input(value=self.config.get("deepinfra_api_key", ""), password=True,
+                  id="deepinfra-key-input", classes="settings-input",
+                  placeholder="(or set DEEPINFRA_API_KEY env var)"),
+            Static("💡 Tip: Use environment variable for security", classes="settings-hint"),
+        ])
+        return widgets
 
     def render_local_ollama_settings(self) -> list:
         """Render local Ollama settings."""
@@ -795,6 +846,8 @@ class SettingsScreen(Screen):
                     self.config["ai_model"] = "haiku"
                 elif event.button.provider_id == "openrouter":
                     self.config["ai_model"] = "balanced"
+                elif event.button.provider_id in ("assemblyai", "deepinfra"):
+                    self.config["ai_model"] = "sonnet"
                 elif event.button.provider_id == "local":
                     # `or` fallback so an empty-string ollama_model still
                     # produces a runnable default (dict.get only fills in the
@@ -900,6 +953,7 @@ class SettingsScreen(Screen):
             "anthropic-key-input": "anthropic_api_key",
             "openrouter-key-input": "openrouter_api_key",
             "assemblyai-key-input": "assemblyai_api_key",
+            "deepinfra-key-input": "deepinfra_api_key",
         }.get(event.input.id or "")
         if field:
             self.config[field] = event.value
@@ -915,6 +969,7 @@ class SettingsScreen(Screen):
             "anthropic-key-input": "anthropic_api_key",
             "openrouter-key-input": "openrouter_api_key",
             "assemblyai-key-input": "assemblyai_api_key",
+            "deepinfra-key-input": "deepinfra_api_key",
         }.items():
             matches = self.query(f"#{widget_id}")
             if matches:

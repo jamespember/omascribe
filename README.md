@@ -74,6 +74,17 @@ ollama pull llama3.2:3b
 
 Or skip AI entirely — set `ai_provider: none` in settings for transcription-only.
 
+Claude through an OpenAI-compatible endpoint — `ai_model: haiku | sonnet | opus`:
+
+| `ai_provider` | Key | Notes |
+|---|---|---|
+| `assemblyai` | `ASSEMBLYAI_API_KEY` | AssemblyAI's LLM Gateway; the same key as cloud transcription below. Model access is enabled per account. |
+| `deepinfra` | `DEEPINFRA_API_KEY` | DeepInfra's OpenAI-compatible API. |
+
+Both are small subclasses of `OpenAICompatibleSummarizer` (a base URL, an env
+var and a tier → model-id table), so another OpenAI-compatible host is a few
+lines.
+
 ## Cloud transcription (optional)
 
 Local Whisper is the default. For faster transcription with **speaker
@@ -138,7 +149,7 @@ Full transcripts with timestamps are saved separately in `transcripts/`.
 Settings are stored in `~/.config/omascribe/config.yaml`:
 
 ```yaml
-ai_provider: anthropic        # none | openai | anthropic | openrouter | local
+ai_provider: anthropic        # none | openai | anthropic | openrouter | assemblyai | deepinfra | local
 ai_model: haiku               # haiku/sonnet | mini/standard | cheap/balanced/premium
 whisper_model: base           # tiny | base | small | medium | large
 whisper_device: cpu           # cpu | cuda | auto

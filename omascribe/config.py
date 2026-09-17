@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 class AppConfig:
     """Application configuration."""
     # AI Summarization
-    ai_provider: str = "none"  # "openai", "anthropic", "openrouter", "local", or "none"
+    ai_provider: str = "none"  # "openai", "anthropic", "openrouter", "assemblyai", "deepinfra", "local", or "none"
     ai_model: str = "haiku"  # Model tier (varies by provider)
     
     # API Keys (or set environment variables)
@@ -24,6 +24,7 @@ class AppConfig:
     anthropic_api_key: str = ""  # ANTHROPIC_API_KEY
     openrouter_api_key: str = ""  # OPENROUTER_API_KEY
     assemblyai_api_key: str = ""  # ASSEMBLYAI_API_KEY (transcription and LLM Gateway)
+    deepinfra_api_key: str = ""  # DEEPINFRA_API_KEY
     
     # Legacy (kept for backwards compatibility)
     ollama_model: str = "llama3.2:3b"
@@ -71,6 +72,8 @@ class AppConfig:
             data['openrouter_api_key'] = self._redact_key(data['openrouter_api_key'])
         if data.get('assemblyai_api_key'):
             data['assemblyai_api_key'] = self._redact_key(data['assemblyai_api_key'])
+        if data.get('deepinfra_api_key'):
+            data['deepinfra_api_key'] = self._redact_key(data['deepinfra_api_key'])
         return data
     
     def provider_api_key(self) -> Optional[str]:
@@ -79,6 +82,8 @@ class AppConfig:
             "openai": "OPENAI_API_KEY",
             "anthropic": "ANTHROPIC_API_KEY",
             "openrouter": "OPENROUTER_API_KEY",
+            "assemblyai": "ASSEMBLYAI_API_KEY",
+            "deepinfra": "DEEPINFRA_API_KEY",
         }
         env_var = env_vars.get(self.ai_provider)
         if not env_var:
@@ -185,7 +190,7 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
         return False, "Invalid recording_retention_days: expected an integer"
 
     # Validate AI provider
-    valid_providers = ["openai", "anthropic", "openrouter", "local", "none"]
+    valid_providers = ["openai", "anthropic", "openrouter", "assemblyai", "deepinfra", "local", "none"]
     if config.ai_provider not in valid_providers:
         return False, f"Invalid ai_provider: {config.ai_provider}. Must be one of {valid_providers}"
     
@@ -225,6 +230,12 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
         if config.ai_model not in valid_models:
             return False, f"Invalid ai_model for OpenRouter: {config.ai_model}. Must be one of {valid_models}"
     
+    elif config.ai_provider in ("assemblyai", "deepinfra"):
+        label = {"assemblyai": "AssemblyAI", "deepinfra": "DeepInfra"}[config.ai_provider]
+        valid_models = ["haiku", "sonnet", "opus"]
+        if config.ai_model not in valid_models:
+            return False, f"Invalid ai_model for {label}: {config.ai_model}. Must be one of {valid_models}"
+
     # Validate transcriber
     valid_transcribers = ["whisper", "assemblyai"]
     if config.transcriber not in valid_transcribers:

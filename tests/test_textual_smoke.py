@@ -170,3 +170,29 @@ async def test_stop_failure_restores_library_view(tmp_path, monkeypatch):
         assert app.query_one("#main-panels").display
         assert not app.query(RecordingView)
         app.exit()
+
+
+@pytest.mark.asyncio
+async def test_assemblyai_provider_and_transcriber_switching(tmp_path, monkeypatch):
+    """The AssemblyAI key input is shared by the summariser and transcriber
+    sections; whichever combination is selected, it must mount exactly once."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    app = OmascribeApp()
+    async with app.run_test(size=(120, 60)) as pilot:
+        await pilot.pause()
+        await pilot.press(",")
+        await pilot.pause()
+        screen = app.screen
+        for button in ["provider-assemblyai", "transcriber-assemblyai", "provider-anthropic",
+                       "transcriber-whisper", "transcriber-assemblyai", "provider-deepinfra",
+                       "aimodel-opus", "provider-assemblyai"]:
+            screen.query_one(f"#{button}").press()
+            await pilot.pause()
+            assert len(screen.query("#assemblyai-key-input")) <= 1
+        assert screen.config["ai_provider"] == "assemblyai"
+        assert screen.config["transcriber"] == "assemblyai"
+        assert screen.config["ai_model"] == "sonnet"
+        app.exit()
+

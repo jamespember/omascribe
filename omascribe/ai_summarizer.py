@@ -490,3 +490,132 @@ class OpenRouterSummarizer(BaseSummarizer):
                     logger.error(f"All {max_retries} attempts failed for OpenRouter API call")
                     logger.error(error_msg, exc_info=True)
                     raise
+
+
+class OpenAICompatibleSummarizer(BaseSummarizer):
+    """Summarizer for any OpenAI chat-completions compatible endpoint.
+
+    Subclasses set the endpoint, the env var holding its key, and a MODELS
+    table mapping tiers onto that service's model ids.
+    """
+
+    BASE_URL = ""
+    ENV_VAR = ""
+    LABEL = ""
+    MODELS: dict = {}
+    # Upstream's 2000 is far too small here: Claude 5 spends output tokens on
+    # reasoning before it writes anything. A 34-minute meeting used 5,420
+    # output tokens for ~1,100 tokens of visible summary, and at 2000 returned
+    # an EMPTY message. Only tokens actually generated are billed.
+    MAX_TOKENS = 16000
+
+    def __init__(self, api_key: Optional[str] = None, model: str = "sonnet"):
+        self.api_key = api_key or os.getenv(self.ENV_VAR)
+        if not self.api_key:
+            raise ValueError(f"{self.LABEL} API key required. Set {self.ENV_VAR} environment variable.")
+
+        if model not in self.MODELS:
+            raise ValueError(f"Invalid model: {model}. Choose from: {list(self.MODELS.keys())}")
+
+        self.model_config = self.MODELS[model]
+        self.model = self.model_config["id"]
+
+        try:
+            from openai import OpenAI
+            self.client = OpenAI(api_key=self.api_key, base_url=self.BASE_URL)
+        except ImportError:
+            raise ImportError("openai package not installed. Run: pip install openai")
+
+    def summarize(self, transcript: str, user_notes: str = "") -> MeetingSummary:
+        """Generate summary with retry logic."""
+        logger.info(f"Generating AI summary with {self.model_config['name']} ({self.LABEL})...")
+        logger.info(f"Transcript: {len(transcript.split())} words")
+
+        max_retries = 2
+        retry_delay = 2  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                # No temperature: Claude 5 models reject it on the AssemblyAI
+                # gateway, and the default is fine for summaries everywhere.
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    max_tokens=self.MAX_TOKENS,
+                    messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes)}],
+                )
+
+                # A cut-off response parses into a note that looks finished
+                # ("No overview generated", half a key point, no action items),
+                # so it is an error, not a summary.
+                if response.choices[0].finish_reason == "length":
+                    raise SummaryTruncated(
+                        f"{self.model_config['name']} hit the {self.MAX_TOKENS}-token output limit "
+                        f"before finishing the summary"
+                    )
+
+                usage = getattr(response, "usage", None)
+                if usage:
+                    cost = (
+                        (usage.prompt_tokens / 1000) * self.model_config['cost_per_1k_input'] +
+                        (usage.completion_tokens / 1000) * self.model_config['cost_per_1k_output']
+                    )
+                    logger.info(f"✓ Summary generated ({usage.total_tokens} tokens, ~${cost:.4f})")
+                else:
+                    logger.info("✓ Summary generated")
+
+                return self._parse_response(response.choices[0].message.content or "")
+
+            except SummaryTruncated:
+                raise  # the same request would be cut off the same way
+            except Exception as e:
+                error_msg = f"Attempt {attempt + 1}/{max_retries} failed: {type(e).__name__}: {e}"
+
+                if attempt < max_retries - 1:
+                    logger.warning(error_msg + f" - Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(f"All attempts failed for {self.LABEL} call")
+                    logger.error(error_msg, exc_info=True)
+                    raise
+
+
+class AssemblyAISummarizer(OpenAICompatibleSummarizer):
+    """Summarizer using the AssemblyAI LLM Gateway.
+
+    Authenticated with the same key that transcribes. Model access is gated
+    per account. Check https://www.assemblyai.com/docs/llm-gateway/available-models
+    before changing an id.
+    """
+
+    BASE_URL = "https://llm-gateway.assemblyai.com/v1"
+    ENV_VAR = "ASSEMBLYAI_API_KEY"
+    LABEL = "AssemblyAI LLM Gateway"
+
+    MODELS = {
+        "haiku": {"id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5",
+                  "cost_per_1k_input": 0.001, "cost_per_1k_output": 0.005},
+        "sonnet": {"id": "claude-sonnet-5", "name": "Claude Sonnet 5",
+                   "cost_per_1k_input": 0.003, "cost_per_1k_output": 0.015},
+        "opus": {"id": "claude-opus-5", "name": "Claude Opus 5",
+                 "cost_per_1k_input": 0.005, "cost_per_1k_output": 0.025},
+    }
+
+
+class DeepInfraSummarizer(OpenAICompatibleSummarizer):
+    """Summarizer using DeepInfra's OpenAI-compatible API, which serves Claude.
+
+    Ids from GET https://api.deepinfra.com/v1/openai/models (no auth needed).
+    """
+
+    BASE_URL = "https://api.deepinfra.com/v1/openai"
+    ENV_VAR = "DEEPINFRA_API_KEY"
+    LABEL = "DeepInfra"
+
+    MODELS = {
+        "haiku": {"id": "anthropic/claude-haiku-4-5", "name": "Claude Haiku 4.5",
+                  "cost_per_1k_input": 0.001, "cost_per_1k_output": 0.005},
+        "sonnet": {"id": "anthropic/claude-sonnet-5", "name": "Claude Sonnet 5",
+                   "cost_per_1k_input": 0.003, "cost_per_1k_output": 0.015},
+        "opus": {"id": "anthropic/claude-opus-5", "name": "Claude Opus 5",
+                 "cost_per_1k_input": 0.005, "cost_per_1k_output": 0.025},
+    }

@@ -17,12 +17,14 @@ except ImportError:
     OLLAMA_AVAILABLE = False
 
 try:
-    from .ai_summarizer import OpenAISummarizer, AnthropicSummarizer, OpenRouterSummarizer, MeetingSummary  # type: ignore
+    from .ai_summarizer import OpenAISummarizer, AnthropicSummarizer, OpenRouterSummarizer, AssemblyAISummarizer, DeepInfraSummarizer, MeetingSummary  # type: ignore
     CLOUD_AVAILABLE = True
 except ImportError:
     CLOUD_AVAILABLE = False
     # Fallback MeetingSummary for type hints
     MeetingSummary = None  # type: ignore
+
+CLOUD_PROVIDERS = ("openai", "anthropic", "openrouter", "assemblyai", "deepinfra")
 
 
 class NoteMaker:
@@ -54,7 +56,7 @@ class NoteMaker:
         self.ai_provider = ai_provider
         self.summarizer: Optional[Any] = None
         
-        if ai_provider in ["openai", "anthropic", "openrouter"]:
+        if ai_provider in CLOUD_PROVIDERS:
             if not CLOUD_AVAILABLE:
                 logger.warning("Cloud AI packages not installed")
                 print(f"Warning: Cloud AI packages not installed. Run: pip install openai anthropic openrouter")
@@ -62,7 +64,7 @@ class NoteMaker:
                 self.ai_provider = "none"
             else:
                 try:
-                    from .ai_summarizer import OpenAISummarizer, AnthropicSummarizer, OpenRouterSummarizer  # type: ignore
+                    from .ai_summarizer import OpenAISummarizer, AnthropicSummarizer, OpenRouterSummarizer, AssemblyAISummarizer, DeepInfraSummarizer  # type: ignore
                     
                     if ai_provider == "openai":
                         self.summarizer = OpenAISummarizer(api_key=api_key, model=ai_model)
@@ -79,6 +81,14 @@ class NoteMaker:
                         model_name = OpenRouterSummarizer.MODELS[ai_model]["name"]
                         logger.info(f"AI summarization enabled (OpenRouter: {model_name})")
                         print(f"AI summarization enabled (OpenRouter: {model_name})")
+                    elif ai_provider == "assemblyai":
+                        self.summarizer = AssemblyAISummarizer(api_key=api_key, model=ai_model)
+                        model_name = AssemblyAISummarizer.MODELS[ai_model]["name"]
+                        logger.info(f"AI summarization enabled (AssemblyAI LLM Gateway: {model_name})")
+                    elif ai_provider == "deepinfra":
+                        self.summarizer = DeepInfraSummarizer(api_key=api_key, model=ai_model)
+                        model_name = DeepInfraSummarizer.MODELS[ai_model]["name"]
+                        logger.info(f"AI summarization enabled (DeepInfra: {model_name})")
                         
                 except Exception as e:
                     logger.error(f"Could not initialize cloud AI: {e}", exc_info=True)
@@ -142,7 +152,7 @@ class NoteMaker:
         ai_error = None
         if self.ai_provider != "none" and self.summarizer:
             try:
-                if self.ai_provider in ["openai", "anthropic", "openrouter"]:
+                if self.ai_provider in CLOUD_PROVIDERS:
                     logger.info("Generating AI summary with cloud API")
                     print("Generating AI summary with cloud API (fast)...")
                 else:
